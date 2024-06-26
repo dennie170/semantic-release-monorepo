@@ -1,11 +1,12 @@
-import { identity, memoizeWith, pipeP } from 'ramda';
+import {identity, memoizeWith, pipeP} from 'ramda';
 import pkgUp from 'pkg-up';
 import readPkg from 'read-pkg';
 import path from 'path';
 import pLimit from 'p-limit';
 import createDebug from 'debug';
-import { getCommitFiles, getRoot } from './git-utils.js';
-import { mapCommits } from './options-transforms.js';
+import {getCommitFiles, getRoot} from './git-utils.js';
+import {mapCommits} from './options-transforms.js';
+import {globby} from "globby";
 
 const debug = createDebug('semantic-release:monorepo');
 const memoizedGetCommitFiles = memoizeWith(identity, getCommitFiles);
@@ -20,17 +21,47 @@ const getPackagePath = async () => {
   return path.relative(gitRoot, path.resolve(packagePath, '..'));
 };
 
+const findDependentPackages = async () => {
+  const gitRoot = await getRoot();
+  let packageName;
+  try {
+    packageName = await readPkg()
+  } catch (e) {
+    return []
+  }
+
+  const otherPackagesInMonorepo = await globby('**/package.json', {cwd: gitRoot});
+
+  return otherPackagesInMonorepo.filter(async pkg => {
+    let packageJson;
+
+    try {
+      packageJson = require(path.resolve(gitRoot, pkg));
+      console.log(packageJson)
+
+      return packageJson.dependencies && packageJson.dependencies[packageName];
+    } catch (e) {
+      return false
+    }
+  }).map(pkg => path.relative(gitRoot, path.resolve(pkg, '..')));
+}
+
 const withFiles = async commits => {
   const limit = pLimit(Number(process.env.SRM_MAX_THREADS) || 500);
   return Promise.all(
     commits.map(commit =>
       limit(async () => {
         const files = await memoizedGetCommitFiles(commit.hash);
-        return { ...commit, files };
+        return {...commit, files};
       })
     )
   );
 };
+
+const filterAsync = async (arr, predicate) => {
+  const fail = Symbol()
+  return (await Promise.all(arr.map(async item => (await predicate(item)) ? item : fail))).filter(i => i !== fail)
+}
 
 const onlyPackageCommits = async commits => {
   const packagePath = await getPackagePath();
@@ -39,15 +70,13 @@ const onlyPackageCommits = async commits => {
   // Convert package root path into segments - one for each folder
   const packageSegments = packagePath.split(path.sep);
 
-  return commitsWithFiles.filter(({ files, subject }) => {
+  return commitsWithFiles.filter(({files, subject}) => {
     // Normalise paths and check if any changed files' path segments start
     // with that of the package root.
     const packageFile = files.find(file => {
       const fileSegments = path.normalize(file).split(path.sep);
       // Check the file is a *direct* descendent of the package folder (or the folder itself)
-      return packageSegments.every(
-        (packageSegment, i) => packageSegment === fileSegments[i]
-      );
+      return packageSegments.every((packageSegment, i) => packageSegment === fileSegments[i]);
     });
 
     if (packageFile) {
@@ -62,14 +91,78 @@ const onlyPackageCommits = async commits => {
   });
 };
 
+const onlyDependentCommits = async commits => {
+  const packagePath = await getPackagePath();
+  const gitRoot = await getRoot();
+  const cwd = path.normalize(gitRoot + '/' + packagePath)
+  let packageJson;
+
+  try {
+    packageJson = require(await pkgUp({
+      cwd
+    }));
+  } catch (e) {
+    return []
+  }
+
+  const dependencies = {
+    ...packageJson.dependencies || {},
+    ...packageJson.devDependencies || {},
+    ...packageJson.peerDependencies || {},
+  }
+
+  debug('Filter commits by package path: "%s"', packagePath);
+
+  const commitsWithFiles = await withFiles(commits);
+
+  return await filterAsync(commitsWithFiles, async ({files, subject}) => {
+
+    // files = ["shared-lib/package.json"]
+    // packagePath = "module1"
+
+    let modifiedDependency;
+
+    for (const file of files) {
+      const filePkg = await pkgUp({
+        cwd: path.dirname(path.resolve(gitRoot, file))
+      });
+
+      if (filePkg) {
+        try {
+          const filePkgJson = require(filePkg)
+
+          if (dependencies[filePkgJson.name]) {
+            modifiedDependency = filePkgJson.name
+            break
+          }
+        } catch (e) {
+          // JSON is invalid
+          continue
+        }
+      }
+    }
+
+
+    if (modifiedDependency) {
+      debug(
+        'Including commit "%s" because it modified package file "%s".',
+        subject,
+        modifiedDependency
+      );
+    }
+
+    return !!modifiedDependency
+  });
+}
+
 // Async version of Ramda's `tap`
 const tapA = fn => async x => {
   await fn(x);
   return x;
 };
 
-const logFilteredCommitCount = logger => async ({ commits }) => {
-  const { name } = await readPkg();
+const logFilteredCommitCount = logger => async ({commits}) => {
+  const {name} = await readPkg();
 
   logger.log(
     'Found %s commits for package %s since last release',
@@ -79,7 +172,7 @@ const logFilteredCommitCount = logger => async ({ commits }) => {
 };
 
 const withOnlyPackageCommits = plugin => async (pluginConfig, config) => {
-  const { logger } = config;
+  const {logger} = config;
 
   return plugin(
     pluginConfig,
@@ -90,4 +183,4 @@ const withOnlyPackageCommits = plugin => async (pluginConfig, config) => {
   );
 };
 
-export { withOnlyPackageCommits, onlyPackageCommits, withFiles };
+export {withOnlyPackageCommits, onlyPackageCommits, onlyDependentCommits, withFiles};

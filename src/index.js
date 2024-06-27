@@ -1,7 +1,7 @@
 import readPkg from 'read-pkg';
 import { compose } from 'ramda';
 import { wrapStep } from 'semantic-release-plugin-decorators';
-import { withOnlyPackageCommits } from './only-package-commits.js';
+import { withBothPackageOnlyAndDependentCommits } from './only-package-commits.js';
 import versionToGitTag from './version-to-git-tag.js';
 import logPluginVersion from './log-plugin-version.js';
 import {
@@ -11,7 +11,7 @@ import {
 
 const analyzeCommits = wrapStep(
   'analyzeCommits',
-  compose(logPluginVersion('analyzeCommits'), withOnlyPackageCommits),
+  compose(logPluginVersion('analyzeCommits'), withBothPackageOnlyAndDependentCommits),
   {
     wrapperName: 'semantic-release-monorepo',
   }
@@ -21,7 +21,7 @@ const generateNotes = wrapStep(
   'generateNotes',
   compose(
     logPluginVersion('generateNotes'),
-    withOnlyPackageCommits,
+    withBothPackageOnlyAndDependentCommits,
     withOptionsTransforms([mapNextReleaseVersion(versionToGitTag)])
   ),
   {
@@ -33,7 +33,7 @@ const success = wrapStep(
   'success',
   compose(
     logPluginVersion('success'),
-    withOnlyPackageCommits,
+    withBothPackageOnlyAndDependentCommits,
     withOptionsTransforms([mapNextReleaseVersion(versionToGitTag)])
   ),
   {
@@ -45,7 +45,7 @@ const fail = wrapStep(
   'fail',
   compose(
     logPluginVersion('fail'),
-    withOnlyPackageCommits,
+    withBothPackageOnlyAndDependentCommits,
     withOptionsTransforms([mapNextReleaseVersion(versionToGitTag)])
   ),
   {

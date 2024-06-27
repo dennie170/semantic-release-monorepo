@@ -21,31 +21,6 @@ const getPackagePath = async () => {
   return path.relative(gitRoot, path.resolve(packagePath, '..'));
 };
 
-const findDependentPackages = async () => {
-  const gitRoot = await getRoot();
-  let packageName;
-  try {
-    packageName = await readPkg()
-  } catch (e) {
-    return []
-  }
-
-  const otherPackagesInMonorepo = await globby('**/package.json', {cwd: gitRoot});
-
-  return otherPackagesInMonorepo.filter(async pkg => {
-    let packageJson;
-
-    try {
-      packageJson = require(path.resolve(gitRoot, pkg));
-      console.log(packageJson)
-
-      return packageJson.dependencies && packageJson.dependencies[packageName];
-    } catch (e) {
-      return false
-    }
-  }).map(pkg => path.relative(gitRoot, path.resolve(pkg, '..')));
-}
-
 const withFiles = async commits => {
   const limit = pLimit(Number(process.env.SRM_MAX_THREADS) || 500);
   return Promise.all(
@@ -106,9 +81,9 @@ const onlyDependentCommits = async commits => {
   }
 
   const dependencies = {
-    ...packageJson.dependencies || {},
-    ...packageJson.devDependencies || {},
-    ...packageJson.peerDependencies || {},
+    ...(packageJson.dependencies || {}),
+    ...(packageJson.devDependencies || {}),
+    ...(packageJson.peerDependencies || {}),
   }
 
   debug('Filter commits by package path: "%s"', packagePath);
@@ -116,10 +91,6 @@ const onlyDependentCommits = async commits => {
   const commitsWithFiles = await withFiles(commits);
 
   return await filterAsync(commitsWithFiles, async ({files, subject}) => {
-
-    // files = ["shared-lib/package.json"]
-    // packagePath = "module1"
-
     let modifiedDependency;
 
     for (const file of files) {
@@ -142,7 +113,6 @@ const onlyDependentCommits = async commits => {
       }
     }
 
-
     if (modifiedDependency) {
       debug(
         'Including commit "%s" because it modified package file "%s".',
@@ -153,7 +123,18 @@ const onlyDependentCommits = async commits => {
 
     return !!modifiedDependency
   });
-}
+};
+
+const bothPackageOnlyAndDependentCommits = async commits => {
+  const packageCommits = await onlyPackageCommits(commits);
+  const dependentCommits = await onlyDependentCommits(commits);
+
+  return packageCommits.concat(dependentCommits).filter(onlyUnique);
+};
+
+const onlyUnique = (value, index, array) => {
+  return array.indexOf(value) === index;
+};
 
 // Async version of Ramda's `tap`
 const tapA = fn => async x => {
@@ -171,16 +152,16 @@ const logFilteredCommitCount = logger => async ({commits}) => {
   );
 };
 
-const withOnlyPackageCommits = plugin => async (pluginConfig, config) => {
+const withBothPackageOnlyAndDependentCommits = plugin => async (pluginConfig, config) => {
   const {logger} = config;
 
   return plugin(
     pluginConfig,
     await pipeP(
-      mapCommits(onlyPackageCommits),
+      mapCommits(bothPackageOnlyAndDependentCommits),
       tapA(logFilteredCommitCount(logger))
     )(config)
   );
 };
 
-export {withOnlyPackageCommits, onlyPackageCommits, onlyDependentCommits, withFiles};
+export {withBothPackageOnlyAndDependentCommits, onlyPackageCommits, onlyDependentCommits, withFiles};
